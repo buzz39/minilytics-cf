@@ -1,0 +1,60 @@
+{
+  "name": "minilytics-cf",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Revenue-first, self-hosted web analytics on Cloudflare Workers + D1. Free to host.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/surendrapandar/minilytics.git"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n api,web \"wrangler dev --port 8787\" \"vite\"",
+    "dev:api": "wrangler dev --port 8787",
+    "dev:web": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:migrate": "wrangler d1 migrations apply DB --remote",
+    "deploy": "vite build && wrangler deploy && npm run db:migrate",
+    "seed": "node scripts/seed-demo.mjs && wrangler d1 execute DB --local --file .wrangler/seed.sql",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "hono": "^4.13.13",
+    "maplibre-gl": "^5.24.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261023.1",
+    "@types/node": "^22.20.5",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "autoprefixer": "^10.6.1",
+    "concurrently": "^10.0.6",
+    "postcss": "^8.5.31",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.15.4",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.5",
+    "vitest": "^3.2.7",
+    "wrangler": "^4.152.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "ADMIN_PASSWORD": {
+        "description": "The password you will log in to your dashboard with. Use a strong one (12+ characters)."
+      },
+      "SESSION_SECRET": {
+        "description": "Any long random string; it signs your login cookie. Generate one with `openssl rand -hex 32` or at [random.org](https://www.random.org/strings/?num=1&len=32&digits=on&upperalpha=on&loweralpha=on&unique=on&format=html&rnd=new)."
+      },
+      "DB": {
+        "description": "Stores your visitors, events and payments. Created for you on Cloudflare D1 (free plan)."
+      }
+    }
+  }
+}
