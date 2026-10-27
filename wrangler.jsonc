@@ -16,7 +16,7 @@
       "binding": "DB",
       "database_name": "minilytics",
       // No database_id: the Deploy button, or the first `npm run deploy`, creates the database and finds it by name after.
-      "migrations_dir": "migrations","database_id": "cf2d143a-8eff-4e68-b1f9-46fc788dccf1"
+      "migrations_dir": "migrations"
     }
   ]
 }
