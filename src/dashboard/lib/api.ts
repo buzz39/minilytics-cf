@@ -37,6 +37,17 @@ export interface Site {
   created_at: number;
   visitors24h?: number;
   online?: number;
+  /** Present when the list is fetched with ?period=. */
+  summary?: SiteSummary;
+}
+
+export interface SiteSummary {
+  visitors: number;
+  revenue: number;
+  currency: string;
+  decimals: number;
+  /** [visitors, revenue] per day (per week for 12m), oldest first. */
+  series: [number, number][];
 }
 
 export interface Kpis {

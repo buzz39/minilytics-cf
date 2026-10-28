@@ -8,6 +8,7 @@ import { passwordsMatch, randomId } from './lib/crypto';
 import { handleDodoWebhook, handleGoalApi, handlePaymentApi, handleStripeWebhook, learnDodoProducts, rematchPayments } from './payments';
 import { handleRazorpayWebhook } from './razorpay';
 import { breakdown, customers, funnel, makeCtx, overview, realtime, visitorProfile, visitors, type FunnelStep } from './stats';
+import { SUMMARY_PERIODS, sitesSummary, type SummaryPeriod } from './summary';
 
 const app = new Hono<AppEnv>();
 const MAX_FAILURES = 10;
@@ -127,11 +128,16 @@ app.get('/api/sites', async (c) => {
     ).bind(now - 5 * 60_000, now - 86_400_000),
   ]);
   const by = new Map((stats.results as any[]).map((r) => [r.site_id, r]));
+  const list = sites.results as unknown as Site[];
+  // ?period=30d adds visitor/revenue series for the sparkline cards.
+  const period = c.req.query('period') as SummaryPeriod | undefined;
+  const summary = period && SUMMARY_PERIODS.includes(period) ? await sitesSummary(c.env.DB, list, period, now) : null;
   return c.json(
-    (sites.results as unknown as Site[]).map((s) => ({
+    list.map((s) => ({
       ...publicSite(s),
       visitors24h: by.get(s.id)?.visitors ?? 0,
       online: by.get(s.id)?.online ?? 0,
+      ...(summary ? { summary: summary[s.id] } : {}),
     })),
   );
 });
