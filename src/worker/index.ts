@@ -6,9 +6,9 @@ import { clearSession, currentUser, googleCallback, googleStart, isHosted, requi
 import { billingWebhook, checkout, planInfo } from './billing';
 import { passwordsMatch, randomId } from './lib/crypto';
 import { handleDodoWebhook, handleGoalApi, handlePaymentApi, handleStripeWebhook, learnDodoProducts, rematchPayments } from './payments';
+import { rememberOwnerDevice } from './owner';
 import { handleRazorpayWebhook } from './razorpay';
-import { breakdown, customers, funnel, makeCtx, overview, realtime, visitorProfile, visitors, type FunnelStep } from './stats';
-import { SUMMARY_PERIODS, sitesSummary, type SummaryPeriod } from './summary';
+import { breakdown, customers, funnel, makeCtx, overview, realtime, sparklines, visitorProfile, visitors, type FunnelStep } from './stats';
 
 const app = new Hono<AppEnv>();
 const MAX_FAILURES = 10;
@@ -64,6 +64,7 @@ app.post('/api/auth/logout', (c) => {
 
 app.get('/api/auth/me', async (c) => {
   const user = await currentUser(c);
+  if (user) c.executionCtx.waitUntil(rememberOwnerDevice(c, user).catch(() => {}));
   return c.json({ loggedIn: !!user, hosted: isHosted(c.env), user });
 });
 
@@ -128,18 +129,21 @@ app.get('/api/sites', async (c) => {
     ).bind(now - 5 * 60_000, now - 86_400_000),
   ]);
   const by = new Map((stats.results as any[]).map((r) => [r.site_id, r]));
-  const list = sites.results as unknown as Site[];
-  // ?period=30d adds visitor/revenue series for the sparkline cards.
-  const period = c.req.query('period') as SummaryPeriod | undefined;
-  const summary = period && SUMMARY_PERIODS.includes(period) ? await sitesSummary(c.env.DB, list, period, now) : null;
   return c.json(
-    list.map((s) => ({
+    (sites.results as unknown as Site[]).map((s) => ({
       ...publicSite(s),
       visitors24h: by.get(s.id)?.visitors ?? 0,
       online: by.get(s.id)?.online ?? 0,
-      ...(summary ? { summary: summary[s.id] } : {}),
     })),
   );
+});
+
+// Every site's totals and sparkline for the all-websites view.
+app.use('/api/sites-overview', requireUser);
+app.get('/api/sites-overview', async (c) => {
+  const access = siteAccessSql(c.env, c.get('user'));
+  const rows = await c.env.DB.prepare(`SELECT s.id FROM sites s WHERE ${access.sql}`).bind(...access.params).all<{ id: string }>();
+  return c.json(await sparklines(c.env.DB, rows.results.map((r) => r.id), c.req.query('period') ?? '30d'));
 });
 
 app.post('/api/sites', async (c) => {
@@ -309,7 +313,18 @@ app.get('/api/sites/:id/funnels/:fid/stats', async (c) => {
 
 app.all('/api/*', (c) => c.json({ error: 'not found' }, 404));
 
-// Everything else is the dashboard (static files).
-app.all('*', (c) => c.env.ASSETS.fetch(c.req.raw));
+// Static files are served before the Worker runs. What reaches here is a client-side route, or a page that doesn't exist.
+const PUBLIC_PAGES = /^\/(terms|privacy|refund)\/?$/;
+const APP_PAGES = /^\/(billing(\/.*)?|site\/[\w-]+(\/settings)?\/?)$/;
+
+app.all('*', async (c) => {
+  const path = new URL(c.req.url).pathname;
+  const index = await c.env.ASSETS.fetch(new URL('/', c.req.url));
+  const headers = new Headers(index.headers);
+  // Signed-in pages are private and unknown paths shouldn't rank: keep both out of search results.
+  if (!PUBLIC_PAGES.test(path)) headers.set('X-Robots-Tag', 'noindex');
+  const status = PUBLIC_PAGES.test(path) || APP_PAGES.test(path) ? 200 : 404;
+  return new Response(index.body, { status, headers });
+});
 
 export default app;

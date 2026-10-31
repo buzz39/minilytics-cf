@@ -37,17 +37,14 @@ export interface Site {
   created_at: number;
   visitors24h?: number;
   online?: number;
-  /** Present when the list is fetched with ?period=. */
-  summary?: SiteSummary;
 }
 
-export interface SiteSummary {
+export interface SiteSpark {
+  id: string;
   visitors: number;
   revenue: number;
-  currency: string;
-  decimals: number;
-  /** [visitors, revenue] per day (per week for 12m), oldest first. */
-  series: [number, number][];
+  online: number;
+  series: { visitors: number; revenue: number }[];
 }
 
 export interface Kpis {
@@ -115,6 +112,7 @@ export interface Me {
     paid: boolean;
     plan_status: string;
     plan_until: number | null;
+    plan: string | null;
   } | null;
 }
 
@@ -129,4 +127,6 @@ export interface PlanInfo {
   soldOut?: { price: string; spots: number }[];
   checkout: boolean;
   supportEmail: string | null;
+  /** Monthly subscription offered next to the main plan, when configured. */
+  monthly?: { price: string } | null;
 }

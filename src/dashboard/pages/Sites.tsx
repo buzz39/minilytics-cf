@@ -1,113 +1,52 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Area, Bar, ComposedChart, ResponsiveContainer, YAxis } from 'recharts';
+import { useEffect, useState } from 'react';
 import { navigate, useMe } from '../App';
 import { Favicon } from '../components/Icons';
 import { Logo } from '../components/Logo';
 import { Modal } from '../components/Modal';
-import { api, type Site, type SiteSummary } from '../lib/api';
+import { Area, Bar, ComposedChart, ResponsiveContainer, YAxis } from 'recharts';
+import { currencyDecimals } from '../../shared/currency';
+import { api, type Site, type SiteSpark } from '../lib/api';
 import { fmtMoney, fmtNumber } from '../lib/format';
+import { usePref } from '../lib/prefs';
+import { useApi } from '../lib/useApi';
 
 const PERIODS = [
-  { id: '7d', label: 'last 7 days' },
-  { id: '30d', label: 'last 30 days' },
-  { id: '90d', label: 'last 90 days' },
-  { id: '12m', label: 'last 12 months' },
-] as const;
-type PeriodId = (typeof PERIODS)[number]['id'];
-const PERIOD_KEY = 'ml:sites-period';
-
-function savedPeriod(): PeriodId {
-  try {
-    const v = localStorage.getItem(PERIOD_KEY);
-    if (PERIODS.some((p) => p.id === v)) return v as PeriodId;
-  } catch {
-    /* storage unavailable */
-  }
-  return '30d';
-}
-
-/** "https://www.sunle.app/" → "sunle.app" */
-const cleanName = (name: string) => name.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '');
-
-/** Revenue per currency, largest first. */
-function revenueByCurrency(sites: Site[]) {
-  const m = new Map<string, { amount: number; decimals: number }>();
-  for (const s of sites) {
-    if (!s.summary) continue;
-    const cur = m.get(s.summary.currency) ?? { amount: 0, decimals: s.summary.decimals };
-    cur.amount += s.summary.revenue;
-    m.set(s.summary.currency, cur);
-  }
-  return [...m.entries()].map(([currency, v]) => ({ currency, ...v })).sort((a, b) => b.amount - a.amount);
-}
-
-function moneyText(parts: { currency: string; amount: number; decimals: number }[]) {
-  const nonZero = parts.filter((p) => p.amount !== 0);
-  if (!nonZero.length) return fmtMoney(0, parts[0]?.currency ?? 'USD', 0);
-  return nonZero.map((p) => fmtMoney(p.amount, p.currency, p.decimals, true)).join(' + ');
-}
+  { value: '24h', label: '24h' },
+  { value: '7d', label: '7d' },
+  { value: '30d', label: '30d' },
+  { value: '90d', label: '90d' },
+];
+const AUTO_REFRESH_MS = 60_000;
 
 export function Sites() {
   const { me } = useMe();
-  const [sites, setSites] = useState<Site[] | null>(null);
   const [adding, setAdding] = useState(false);
-  const [period, setPeriod] = useState<PeriodId>(savedPeriod);
+  const [period, setPeriod] = usePref('ml_sites_period', '30d');
+  const [reloadKey, setReloadKey] = useState(0);
+  const { data: sites, loading: loadingSites } = useApi<Site[]>('/api/sites', reloadKey);
+  const { data: sparks, loading: loadingSparks } = useApi<SiteSpark[]>(`/api/sites-overview?period=${period}`, reloadKey);
+  const loading = loadingSites || loadingSparks;
 
   useEffect(() => {
-    let live = true;
-    api<Site[]>(`/api/sites?period=${period}`).then((s) => {
-      if (!live) return;
-      setSites(s);
-      if (!s.length) setAdding(true);
-    });
-    return () => {
-      live = false;
-    };
-  }, [period]);
+    if (sites && !sites.length) setAdding(true);
+  }, [sites]);
 
-  function choosePeriod(p: PeriodId) {
-    setPeriod(p);
-    try {
-      localStorage.setItem(PERIOD_KEY, p);
-    } catch {
-      /* storage unavailable */
-    }
-  }
+  // Keep the numbers fresh while the page sits open.
+  useEffect(() => {
+    const t = setInterval(() => document.visibilityState === 'visible' && setReloadKey((k) => k + 1), AUTO_REFRESH_MS);
+    return () => clearInterval(t);
+  }, []);
 
   async function logout() {
     await api('/api/auth/logout', { method: 'POST' });
     window.dispatchEvent(new Event('ml:logout'));
   }
 
-  const totals = useMemo(() => {
-    if (!sites?.length) return null;
-    const money = revenueByCurrency(sites);
-    // Sum the sites' series point by point, aligned on the most recent point (timezones can shift the count by one).
-    const len = Math.max(...sites.map((s) => s.summary?.series.length ?? 0));
-    const main = money[0]?.currency;
-    const series: [number, number][] = Array.from({ length: len }, () => [0, 0]);
-    for (const s of sites) {
-      const pts = s.summary?.series ?? [];
-      pts.forEach(([v, r], i) => {
-        const j = len - pts.length + i;
-        series[j][0] += v;
-        if (s.summary?.currency === main) series[j][1] += r;
-      });
-    }
-    return {
-      visitors: sites.reduce((a, s) => a + (s.summary?.visitors ?? 0), 0),
-      online: sites.reduce((a, s) => a + (s.online ?? 0), 0),
-      money,
-      series,
-    };
-  }, [sites]);
-
-  const firstName = me.user?.name?.split(' ')[0];
-  const periodLabel = PERIODS.find((p) => p.id === period)!.label;
+  const bySite = new Map(sparks?.map((s) => [s.id, s]));
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 sm:py-12">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center justify-between">
         <Logo />
         <div className="flex items-center gap-2">
           {me.hosted && me.user && (
@@ -125,64 +64,41 @@ export function Sites() {
         </div>
       </div>
 
-      <p className="mt-10 text-lg leading-relaxed text-stone-500 sm:text-xl">
-        {firstName ? `Hey ${firstName}, you` : 'You'} got{' '}
-        <b className="font-semibold text-ink">{totals ? fmtNumber(totals.visitors) : '…'} visitors</b> and made{' '}
-        <b className="font-semibold text-ink">{totals ? moneyText(totals.money) : '…'}</b> in the{' '}
-        {/* The visible label sizes the control; the native select sits invisibly on top so it stays keyboard and touch friendly. */}
-        <span className="group relative inline-flex items-center gap-1 whitespace-nowrap border-b border-dashed border-stone-400 font-semibold text-ink focus-within:border-ink hover:border-ink">
-          {periodLabel}
-          <span className="text-xs text-stone-400 group-hover:text-ink">▾</span>
-          <select
-            aria-label="Period"
-            value={period}
-            onChange={(e) => choosePeriod(e.target.value as PeriodId)}
-            className="absolute inset-0 cursor-pointer opacity-0"
-          >
+      <div className="mt-10 flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold">Your websites</h1>
+        <div className="flex items-center gap-2">
+          <div className="tabs">
             {PERIODS.map((p) => (
-              <option key={p.id} value={p.id}>
+              <button key={p.value} className={`tab ${period === p.value ? 'tab-active' : ''}`} onClick={() => setPeriod(p.value)}>
                 {p.label}
-              </option>
+              </button>
             ))}
-          </select>
-        </span>
-      </p>
+          </div>
+          <button className="btn h-10 w-10 px-0" onClick={() => setReloadKey((k) => k + 1)} aria-label="Refresh" title="Refresh">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={loading ? 'animate-spin' : ''}>
+              <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
+              <path d="M21 3v5h-5" />
+            </svg>
+          </button>
+        </div>
+      </div>
 
-      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {!sites &&
-          [0, 1, 2].map((i) => (
-            <div key={i} className="card h-[214px] animate-pulse p-5">
-              <div className="h-5 w-40 rounded bg-stone-100" />
-              <div className="mt-6 h-24 rounded bg-stone-50" />
-            </div>
-          ))}
-
-        {sites && sites.length > 1 && totals && (
-          <SiteCard
-            icon={<FaviconStack domains={sites.map((s) => s.domain)} />}
-            title={`All ${sites.length} websites`}
-            online={totals.online}
-            series={totals.series}
-            visitors={totals.visitors}
-            revenue={moneyText(totals.money)}
-            periodLabel={periodLabel}
-          />
-        )}
-
-        {sites?.map((s) => (
-          <SiteCard
-            key={s.id}
-            onClick={() => navigate(`/site/${s.id}`)}
-            icon={<Favicon domain={s.domain} size={22} />}
-            title={cleanName(s.name) || s.domain}
-            online={s.online ?? 0}
-            series={s.summary?.series ?? []}
-            visitors={s.summary?.visitors ?? 0}
-            revenue={s.summary ? fmtMoney(s.summary.revenue, s.summary.currency, s.summary.decimals, true) : '…'}
-            periodLabel={periodLabel}
-          />
-        ))}
-
+      <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {sites && sites.length > 1 && <AllSitesCard sites={sites} sparks={sparks} />}
+        {sites?.map((s) => {
+          const spark = bySite.get(s.id);
+          return (
+            <button key={s.id} onClick={() => navigate(`/site/${s.id}`)} className="card p-5 text-left transition hover:-translate-y-0.5 hover:shadow-md">
+              <div className="flex items-center gap-3">
+                <Favicon domain={s.domain} size={24} />
+                <div className="min-w-0 flex-1 truncate font-semibold">{s.name}</div>
+                {!!spark?.online && <Online n={spark.online} />}
+              </div>
+              <Sparkline series={spark?.series} />
+              <Totals visitors={spark?.visitors} revenue={spark ? [{ currency: s.currency, amount: spark.revenue }] : undefined} />
+            </button>
+          );
+        })}
         {sites && !sites.length && (
           <div className="card col-span-full p-10 text-center text-stone-500">No websites yet. Add your first one to get a tracking snippet.</div>
         )}
@@ -192,100 +108,80 @@ export function Sites() {
   );
 }
 
-function SiteCard(props: {
-  icon: ReactNode;
-  title: string;
-  online: number;
-  series: [number, number][];
-  visitors: number;
-  revenue: string;
-  periodLabel: string;
-  onClick?: () => void;
-}) {
-  const { icon, title, online, series, visitors, revenue, periodLabel, onClick } = props;
-  const body = (
-    <>
-      <div className="flex items-center gap-2.5">
-        <span className="flex h-6 w-6 shrink-0 items-center justify-center">{icon}</span>
-        <span className="min-w-0 flex-1 truncate font-semibold">{title}</span>
-        {online > 0 && (
-          <span className="flex shrink-0 items-center gap-1.5 text-sm font-medium text-emerald-600" title={`${online} online now`}>
-            <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
-            {online}
-          </span>
-        )}
+/** Every site added together. Revenue is only summed within a currency. */
+function AllSitesCard({ sites, sparks }: { sites: Site[]; sparks: SiteSpark[] | null }) {
+  const currency = new Map(sites.map((s) => [s.id, s.currency]));
+  const series = sparks?.[0]?.series.map((_, i) => ({
+    visitors: sparks.reduce((n, s) => n + s.series[i].visitors, 0),
+    revenue: sparks.reduce((n, s) => n + s.series[i].revenue, 0),
+  }));
+  const revenue = new Map<string, number>();
+  for (const s of sparks ?? []) {
+    const c = currency.get(s.id) ?? 'USD';
+    revenue.set(c, (revenue.get(c) ?? 0) + s.revenue);
+  }
+  const online = sparks?.reduce((n, s) => n + s.online, 0) ?? 0;
+  return (
+    <div className="card p-5">
+      <div className="flex items-center gap-3">
+        <div className="flex -space-x-2">
+          {sites.slice(0, 3).map((s) => (
+            <span key={s.id} className="rounded-md ring-2 ring-white">
+              <Favicon domain={s.domain} size={20} />
+            </span>
+          ))}
+        </div>
+        <div className="min-w-0 flex-1 truncate font-semibold">{sites.length} websites</div>
+        {!!online && <Online n={online} />}
       </div>
       <Sparkline series={series} />
-      <div className="mt-3 text-sm text-stone-500" title={periodLabel}>
-        <b className="font-semibold text-ink">{fmtNumber(visitors)}</b> visitors <span className="px-1 text-stone-300">•</span>
-        <b className="font-semibold text-ink">{revenue}</b> revenue
-      </div>
-    </>
-  );
-  const cls = 'card flex flex-col p-5 text-left';
-  return onClick ? (
-    <button onClick={onClick} className={`${cls} transition hover:-translate-y-0.5 hover:shadow-md`}>
-      {body}
-    </button>
-  ) : (
-    <div className={cls}>{body}</div>
+      <Totals visitors={sparks?.reduce((n, s) => n + s.visitors, 0)} revenue={sparks ? [...revenue].map(([currency, amount]) => ({ currency, amount })) : undefined} />
+    </div>
   );
 }
 
-/** Visitors as a smooth line over revenue bars, no axes: a shape to scan, details live in each site's dashboard. */
-function Sparkline({ series }: { series: [number, number][] }) {
-  const data = useMemo(() => series.map(([v, r]) => ({ v, r })), [series]);
-  const hasRevenue = data.some((d) => d.r > 0);
-  const hasVisitors = data.some((d) => d.v > 0);
-  if (!data.length) return <div className="mt-4 h-24" />;
+function Online({ n }: { n: number }) {
   return (
-    <div className="relative mt-4 h-24">
-      {!hasVisitors && !hasRevenue && (
-        <span className="absolute inset-0 flex items-center justify-center text-xs text-stone-400">No visitors yet</span>
-      )}
+    <span className="flex items-center gap-1.5 text-sm text-emerald-600" title={`${n} online now`}>
+      <span className="h-2 w-2 animate-pulse rounded-full bg-green-500" />
+      {n}
+    </span>
+  );
+}
+
+function Sparkline({ series }: { series?: { visitors: number; revenue: number }[] }) {
+  if (!series) return <div className="mt-4 h-20 animate-pulse rounded-lg bg-stone-100" />;
+  return (
+    <div className="mt-4 h-20">
       <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={data} margin={{ top: 4, right: 2, bottom: 2, left: 2 }} barCategoryGap="20%">
+        <ComposedChart data={series} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
           <defs>
-            <linearGradient id="spark-vis" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#8dbdf0" stopOpacity={0.3} />
+            <linearGradient id="spark-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#8dbdf0" stopOpacity={0.35} />
               <stop offset="100%" stopColor="#8dbdf0" stopOpacity={0} />
             </linearGradient>
           </defs>
-          <YAxis yAxisId="v" hide domain={[0, (max: number) => Math.max(max, 1) * 1.08]} />
-          {/* Revenue bars use the lower ~70% so the visitor line stays readable above them. */}
-          <YAxis yAxisId="r" hide domain={[0, (max: number) => Math.max(max, 1) * 1.4]} />
-          {hasRevenue && <Bar yAxisId="r" dataKey="r" fill="#e07b5f" radius={[2, 2, 0, 0]} maxBarSize={10} isAnimationActive={false} />}
-          <Area
-            yAxisId="v"
-            type="monotone"
-            dataKey="v"
-            stroke={hasVisitors ? '#7cb1ea' : '#e7e5e4'}
-            strokeWidth={2}
-            fill="url(#spark-vis)"
-            dot={false}
-            activeDot={false}
-            isAnimationActive={false}
-          />
+          <YAxis yAxisId="v" hide domain={[0, 'dataMax']} />
+          <YAxis yAxisId="r" hide domain={[0, 'dataMax']} />
+          <Bar yAxisId="r" dataKey="revenue" fill="#e07b5f" radius={[2, 2, 0, 0]} maxBarSize={6} isAnimationActive={false} />
+          <Area yAxisId="v" type="monotone" dataKey="visitors" stroke="#8dbdf0" strokeWidth={2} fill="url(#spark-fill)" isAnimationActive={false} />
         </ComposedChart>
       </ResponsiveContainer>
     </div>
   );
 }
 
-function FaviconStack({ domains }: { domains: string[] }) {
-  const shown = domains.slice(0, 3);
+function Totals({ visitors, revenue }: { visitors?: number; revenue?: { currency: string; amount: number }[] }) {
+  const paid = revenue?.filter((r) => r.amount !== 0) ?? [];
   return (
-    <span className="relative block h-6 w-6">
-      {shown.map((d, i) => (
-        <span
-          key={d + i}
-          className="absolute rounded-md bg-white ring-2 ring-white"
-          style={{ left: i * 4, top: i * 4, zIndex: shown.length - i, transform: `scale(${1 - i * 0.12})` }}
-        >
-          <Favicon domain={d} size={16} />
-        </span>
-      ))}
-    </span>
+    <div className="mt-3 text-sm text-stone-500">
+      <span className="font-semibold text-ink">{visitors === undefined ? '—' : fmtNumber(visitors)}</span> visitors
+      {' · '}
+      <span className="font-semibold text-ink">
+        {revenue === undefined ? '—' : paid.length ? paid.map((r) => fmtMoney(r.amount, r.currency, currencyDecimals(r.currency), true)).join(' + ') : fmtMoney(0, revenue[0]?.currency ?? 'USD', 0)}
+      </span>{' '}
+      revenue
+    </div>
   );
 }
 
